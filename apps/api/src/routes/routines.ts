@@ -1,7 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import { routineJobKey, routineWakeupJob, runContinueJob } from "@rakazo/adapter-kit";
 import { parseRoutineWatch, stableStringify, validateRoutineWatch } from "@rakazo/adapters";
-import { canonicalPiProviderId } from "@rakazo/contracts";
+import { canonicalPiProviderId, ROUTINE_TRIGGER_REQUIRED } from "@rakazo/contracts";
 import {
   expandSkillReferencesInPrompt,
   hasMixedOneShotSchedule,
@@ -9,6 +9,7 @@ import {
 } from "@rakazo/core";
 import { IsolationError, Prisma } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { assertEmailTrigger } from "../bot-email-address.js";
 import { assertRoutineModel } from "../model-pins.js";
 import { listRoutineRuns } from "../routine-runs.js";
 import {
@@ -75,6 +76,9 @@ export function routinesRoutes(ctx: RouterContext) {
             });
           }
         }
+        if (input.emailSenders) {
+          await assertEmailTrigger(deps.prisma, deps.env.inboundEmailDomain, bot.id);
+        }
         await assertRoutineModel(deps, context.actor, input, codexCatalog);
         const row = await deps.prisma.routine.create({
           data: routineRowData(context.actor, input, routineNextRunAt(input)),
@@ -101,6 +105,11 @@ export function routinesRoutes(ctx: RouterContext) {
         const githubEnabled = input.githubEnabled ?? existing.githubEnabled;
         const messageProvider =
           input.messageProvider === undefined ? existing.messageProvider : input.messageProvider;
+        const emailSenders =
+          input.emailSenders === undefined ? existing.emailSenders : input.emailSenders;
+        if (input.emailSenders && input.emailSenders !== existing.emailSenders) {
+          await assertEmailTrigger(deps.prisma, deps.env.inboundEmailDomain, bot.id);
+        }
         const modelProvider =
           input.modelProvider === undefined ? existing.modelProvider : input.modelProvider;
         const modelId = input.modelId === undefined ? existing.modelId : input.modelId;
@@ -149,10 +158,15 @@ export function routinesRoutes(ctx: RouterContext) {
         const watchChanged =
           input.watch !== undefined &&
           stableStringify(input.watch) !== stableStringify(parseRoutineWatch(existing.watch));
-        if (crons.length === 0 && !webhookEnabled && !githubEnabled && !messageProvider && !watch) {
-          throw new ORPCError("BAD_REQUEST", {
-            message: "Add a schedule, webhook, GitHub, message, or change trigger",
-          });
+        if (
+          crons.length === 0 &&
+          !webhookEnabled &&
+          !githubEnabled &&
+          !messageProvider &&
+          !emailSenders &&
+          !watch
+        ) {
+          throw new ORPCError("BAD_REQUEST", { message: ROUTINE_TRIGGER_REQUIRED });
         }
         if (watch && crons.length > 0) {
           throw new ORPCError("BAD_REQUEST", {
@@ -254,6 +268,7 @@ export function routinesRoutes(ctx: RouterContext) {
               webhookEnabled: input.webhookEnabled,
               githubEnabled: input.githubEnabled,
               messageProvider: input.messageProvider,
+              emailSenders: input.emailSenders,
               ...(touchesModel ? { modelProvider, modelId, thinkingLevel } : {}),
               // A changed watch starts from a fresh baseline.
               ...(input.watch === undefined
