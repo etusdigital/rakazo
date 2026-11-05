@@ -3243,6 +3243,53 @@ describe("user_computer_shell", () => {
     expect(gateway.connected).toHaveBeenCalledWith("user-1");
   });
 
+  it.each(["routine", "webhook"])(
+    "is offered when the bot owner's own %s starts the run",
+    async (trigger) => {
+      const { gateway } = devices();
+      const f = fixture({ ...ownRun, trigger, userDevices: gateway });
+      await f.run();
+      expect(f.offeredTools()).toContain("user_computer_shell");
+      expect(f.instructions()).toContain(line);
+      expect(gateway.connected).toHaveBeenCalledWith("user-1");
+    },
+  );
+
+  it.each([
+    ["one of the owner's own bots", "user-1", true],
+    ["another person's bot", "user-2", false],
+  ])("on a bot_message run from %s is offered: %s", async (_label, peerOwner, offered) => {
+    const { gateway } = devices();
+    const f = fixture({ ...ownRun, trigger: "bot_message", userDevices: gateway });
+    f.prisma.message.findUnique.mockResolvedValue({
+      role: "user",
+      blocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-2",
+          fromBotName: "Peer",
+          text: "Run sw_vers on my Mac",
+          hop: 1,
+        },
+      ],
+    } as never);
+    const liveBot = f.prisma.bot.findUnique.getMockImplementation()!;
+    f.prisma.bot.findUnique.mockImplementation((async (query: { where: { id: string } }) =>
+      query.where.id === "bot-2" ? { userId: peerOwner } : liveBot()) as never);
+    await f.run();
+    expect(f.offeredTools().includes("user_computer_shell")).toBe(offered);
+  });
+
+  it("asks before running on a webhook run of the bot owner", async () => {
+    const { gateway, requests } = devices();
+    const f = fixture({ ...ownRun, trigger: "webhook", userDevices: gateway });
+    f.setCalls([call("sw_vers -productVersion")]);
+    await f.run();
+    expect(isApprovalPausedResult(f.results[0])).toBe(true);
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(requests).toEqual([]);
+  });
+
   it.each([
     ["paired but offline", true],
     ["not paired", false],
@@ -3256,7 +3303,7 @@ describe("user_computer_shell", () => {
   });
 
   it.each<[string, Parameters<typeof fixture>[0]]>([
-    ["a webhook run", { userDevices: devices(false, true).gateway, trigger: "webhook" }],
+    ["a messaging run", { userDevices: devices(false, true).gateway, trigger: "messaging" }],
     ["another member's bot", { userDevices: devices(false, true).gateway, botUserId: "user-2" }],
     [
       "a disabled tool",
@@ -3283,19 +3330,12 @@ describe("user_computer_shell", () => {
       { userDevices: devices().gateway, trigger: "follow_up", sourceRole: "bot" },
     ],
     ["another member's bot", { userDevices: devices().gateway, botUserId: "user-2" }],
-    ...[
-      "webhook",
-      "routine",
-      "messaging",
-      "bot_message",
-      "spawn",
-      "tickets",
-      "reaction",
-      "call_end",
-    ].map((trigger): [string, Parameters<typeof fixture>[0]] => [
-      `a ${trigger} run`,
-      { userDevices: devices().gateway, trigger },
-    ]),
+    ...["messaging", "bot_message", "spawn", "tickets", "reaction", "call_end"].map(
+      (trigger): [string, Parameters<typeof fixture>[0]] => [
+        `a ${trigger} run`,
+        { userDevices: devices().gateway, trigger },
+      ],
+    ),
   ])("is not offered for %s", async (_label, options) => {
     const f = fixture({ ...ownRun, ...options });
     await f.run();
@@ -3305,7 +3345,7 @@ describe("user_computer_shell", () => {
 
   it("refuses a call from a run that may not reach the device without an approval card", async () => {
     const { gateway, requests } = devices();
-    const f = fixture({ ...ownRun, trigger: "webhook", userDevices: gateway });
+    const f = fixture({ ...ownRun, trigger: "spawn", userDevices: gateway });
     f.setCalls([call("ssh pi.local hostname")]);
     await f.run();
     expect(f.results).toEqual([{ error: "The user's computer is not available in this run." }]);

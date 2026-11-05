@@ -1291,7 +1291,13 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
             ? await deps.prisma.message.findUnique({
                 where: { id: run.sourceMessageId },
-                select: { clientNonce: true, role: true, blocks: true, threadId: true },
+                select: {
+                  clientNonce: true,
+                  role: true,
+                  blocks: true,
+                  threadId: true,
+                  botId: true,
+                },
               })
             : null;
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
@@ -1310,12 +1316,26 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        const peerBotId =
+          run.trigger === "bot_message"
+            ? peerMessage?.fromBotId
+            : sourceMessage?.role === "bot"
+              ? sourceMessage.botId
+              : null;
+        const peerBot =
+          peerBotId && run.userId === bot.userId && !nonOwnerChatRun
+            ? await deps.prisma.bot.findUnique({
+                where: { id: peerBotId },
+                select: { userId: true },
+              })
+            : null;
         const userComputerOwnerId = userComputerOwner({
           trigger: run.trigger,
           sourceRole: sourceMessage?.role,
           messagingChannelRun: nonOwnerChatRun,
           runUserId: run.userId,
           botUserId: bot.userId,
+          peerBotUserId: peerBot?.userId,
         });
         let userComputer: UserComputerState;
         let userComputerScreen = false;

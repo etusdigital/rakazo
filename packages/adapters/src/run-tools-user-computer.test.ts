@@ -95,14 +95,35 @@ describe("userComputerOwner", () => {
   });
 
   it.each([
-    { trigger: "routine" },
-    { trigger: "webhook" },
+    { trigger: "bot_message", sourceRole: undefined, peerBotUserId: "user-1" },
+    { trigger: "follow_up", sourceRole: "bot", peerBotUserId: "user-1" },
+    { trigger: "routine", sourceRole: undefined },
+    { trigger: "webhook", sourceRole: undefined },
+  ])("is the bot owner for their own bot, routine or webhook: %o", (change) => {
+    expect(userComputerOwner({ ...own, ...change })).toBe("user-1");
+  });
+
+  it.each([
     { trigger: "messaging" },
+    { trigger: "messaging", messagingChannelRun: true },
     { trigger: "call_end" },
+    { trigger: "spawn" },
+    { trigger: "tickets" },
+    { trigger: "created" },
+    { trigger: "reaction" },
     { sourceRole: "bot" },
+    { sourceRole: "bot", peerBotUserId: "user-2" },
     { sourceRole: undefined },
     { messagingChannelRun: true },
     { runUserId: "user-2" },
+    { trigger: "bot_message", sourceRole: undefined },
+    { trigger: "bot_message", sourceRole: undefined, peerBotUserId: "user-2" },
+    { trigger: "bot_message", peerBotUserId: "user-1", messagingChannelRun: true },
+    { trigger: "bot_message", peerBotUserId: "user-1", runUserId: "user-2" },
+    { trigger: "routine", messagingChannelRun: true },
+    { trigger: "routine", runUserId: "user-2" },
+    { trigger: "webhook", messagingChannelRun: true },
+    { trigger: "webhook", runUserId: "user-2" },
   ])("is nobody for %o", (change) => {
     expect(userComputerOwner({ ...own, ...change })).toBeUndefined();
   });

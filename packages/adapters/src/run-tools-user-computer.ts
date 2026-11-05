@@ -41,9 +41,12 @@ export type UserComputerState = "connected" | "offline" | undefined;
 const USER_COMPUTER_UNAVAILABLE =
   "The user's computer is not connected. Ask them to open the Rakazo desktop app.";
 
+const OWNER_UNATTENDED_TRIGGERS = new Set(["routine", "webhook"]);
+
 /**
- * Whose own computer this run may reach: the person whose message started it, when they own the
- * bot. Routines, webhooks, channels, other bots and other people's messages reach no one's.
+ * Whose own computer this run may reach: the bot owner's, when the run is theirs and it started
+ * from their own message, from one of their own bots, or from their routine or webhook. Channels,
+ * other people's bots and other people's runs reach no one's.
  */
 export function userComputerOwner(input: {
   trigger: string;
@@ -51,10 +54,17 @@ export function userComputerOwner(input: {
   messagingChannelRun: boolean;
   runUserId: string;
   botUserId: string;
+  peerBotUserId?: string | undefined;
 }): string | undefined {
-  if (input.trigger !== "user" && input.trigger !== "follow_up") return undefined;
-  if (input.sourceRole !== "user" || input.messagingChannelRun) return undefined;
-  return input.runUserId === input.botUserId ? input.runUserId : undefined;
+  if (input.messagingChannelRun || input.runUserId !== input.botUserId) return undefined;
+  const ownBot = input.peerBotUserId === input.botUserId;
+  if (input.trigger === "user" || input.trigger === "follow_up") {
+    if (input.sourceRole === "user" || (input.sourceRole === "bot" && ownBot))
+      return input.runUserId;
+    return undefined;
+  }
+  if (input.trigger === "bot_message") return ownBot ? input.runUserId : undefined;
+  return OWNER_UNATTENDED_TRIGGERS.has(input.trigger) ? input.runUserId : undefined;
 }
 
 /**
