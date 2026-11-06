@@ -30,6 +30,8 @@ function deps(
     /** Simulate a unique (threadId, clientNonce) race after both retries miss. */
     uniqueConflictOnCommit?: boolean;
     transactionConflictOnce?: boolean;
+    /** Blocks of the sending run's own messages, as questions it asked. */
+    runMessageBlocks?: unknown[];
   } = {},
 ) {
   const enqueue = vi.fn().mockResolvedValue(undefined);
@@ -74,7 +76,14 @@ function deps(
           ],
         ),
     },
-    message: { findUnique: messageFindUnique, findMany: vi.fn().mockResolvedValue([]) },
+    message: {
+      findUnique: messageFindUnique,
+      findMany: vi
+        .fn()
+        .mockResolvedValue(
+          options.runMessageBlocks ? [{ blocks: options.runMessageBlocks }] : [],
+        ),
+    },
     run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     $transaction: vi.fn(async (fn: (client: unknown) => unknown) => {
       transactionAttempts += 1;
@@ -263,7 +272,74 @@ describe("messaging another bot", () => {
       { bot_id: "bot-target", message: "again" },
     );
     expect(sent.ok).toBe(false);
+    expect(sent.ok ? "" : sent.error).toContain("hop 7 of 6");
     expect(harness.tx.run.create).not.toHaveBeenCalled();
+  });
+
+  const exhaustedSource = [
+    { kind: "bot_message_received", fromBotId: "b", fromBotName: "B", text: "hi", hop: 6 },
+  ];
+  const answeredChoice = {
+    kind: "ask",
+    text: "Merge #108?",
+    actions: [
+      { id: "a", label: "Send now" },
+      { id: "b", label: "Hold" },
+    ],
+    status: "answered",
+    answer: "a",
+  };
+
+  it("starts a fresh chain once the user answered the run's question", async () => {
+    const harness = deps({ hopBlocks: exhaustedSource, runMessageBlocks: [answeredChoice] });
+    const sent = await messageBot(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      { bot_id: "bot-target", message: "the user said merge" },
+    );
+    expect(sent.ok).toBe(true);
+    expect(harness.tx.run.create).toHaveBeenCalled();
+  });
+
+  it("keeps counting while the run's question is still unanswered", async () => {
+    const harness = deps({
+      hopBlocks: exhaustedSource,
+      runMessageBlocks: [{ ...answeredChoice, status: "pending", answer: undefined }],
+    });
+    const sent = await messageBot(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      { bot_id: "bot-target", message: "again" },
+    );
+    expect(sent.ok).toBe(false);
+  });
+
+  it("does not start a fresh chain from an answered tool approval", async () => {
+    const harness = deps({
+      hopBlocks: exhaustedSource,
+      runMessageBlocks: [
+        {
+          kind: "ask",
+          text: "Allow fetch?",
+          approvalEffectId: "effect-1",
+          actions: [
+            { id: "allow", label: "Allow" },
+            { id: "deny", label: "Deny" },
+          ],
+          status: "answered",
+          answer: "allow",
+        },
+      ],
+    });
+    const sent = await messageBot(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      { bot_id: "bot-target", message: "again" },
+    );
+    expect(sent.ok).toBe(false);
   });
 
   it("allows a final result back through after the request hop limit", async () => {

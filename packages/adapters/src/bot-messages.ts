@@ -5,7 +5,10 @@ import {
   botMessageContext,
   botMessageHopExhausted,
   buildBotMessageWakePrompt,
+  botMessageMaxHops,
   clampBotMessage,
+  isApprovalAskBlock,
+  isSecretAskBlock,
   nextBotMessageHop,
   resolveBotAddress,
 } from "@rakazo/core";
@@ -34,6 +37,29 @@ export async function currentBotMessageHop(
   });
   const blocks = Array.isArray(source?.blocks) ? (source.blocks as MessageBlock[]) : [];
   return botMessageContext(blocks)?.hop ?? 0;
+}
+
+/**
+ * A person answering this run's question (a choice or a typed reply, not a tool approval or a
+ * secret) is the person speaking, so whatever the bot sends next starts a fresh chain.
+ */
+export async function personAnsweredRun(prisma: PrismaClient, runId: string): Promise<boolean> {
+  const messages = await prisma.message.findMany({
+    where: { runId, role: "bot" },
+    select: { blocks: true },
+  });
+  return messages.some(
+    (message) =>
+      Array.isArray(message.blocks) &&
+      (message.blocks as MessageBlock[]).some(
+        (block) =>
+          block.kind === "ask" &&
+          block.status === "answered" &&
+          !block.dismissed &&
+          !isApprovalAskBlock(block) &&
+          !isSecretAskBlock(block),
+      ),
+  );
 }
 
 export async function loadBotMessageContext(
@@ -94,7 +120,8 @@ export async function messageBot(
 
   const sourceContext = await loadBotMessageContext(deps.prisma, run.sourceMessageId);
   const intent = input.intent ?? "request";
-  const hop = nextBotMessageHop(sourceContext?.hop);
+  const freshChain = sourceContext ? await personAnsweredRun(deps.prisma, run.id) : false;
+  const hop = nextBotMessageHop(freshChain ? undefined : sourceContext?.hop);
 
   const candidates = await deps.prisma.bot.findMany({
     where: { spaceId: run.spaceId, userId: run.userId, archivedAt: null },
@@ -118,8 +145,7 @@ export async function messageBot(
   if (botMessageHopExhausted(hop) && !returnsToSender) {
     return {
       ok: false as const,
-      error:
-        "bot-to-bot message limit reached for this chain; report back to the user instead of messaging another bot",
+      error: `bot-to-bot message limit reached for this chain (hop ${hop} of ${botMessageMaxHops()}); report back to the user instead of messaging another bot. The chain starts over when the user sends a message or answers one of your questions.`,
     };
   }
 
